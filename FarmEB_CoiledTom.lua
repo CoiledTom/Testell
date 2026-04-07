@@ -1,6 +1,5 @@
 -- ============================================================
 --   Farm EB do Delta  |  by CoiledTom
---   Script: Farm de Construção
 --   UI: WindUI v2
 -- ============================================================
 
@@ -10,25 +9,28 @@ local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/rel
 --   SERVIÇOS
 -- ============================================================
 
-local Players       = game:GetService("Players")
-local RunService    = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
+local VirtualInput     = game:GetService("VirtualInputManager")
 
-local LocalPlayer   = Players.LocalPlayer
-local Character     = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local HRP           = Character:WaitForChild("HumanoidRootPart")
+local LocalPlayer      = Players.LocalPlayer
+local Character        = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local HRP              = Character:WaitForChild("HumanoidRootPart")
 
 -- ============================================================
 --   CONFIGURAÇÃO DA UI
 -- ============================================================
 
+WindUI.TransparencyValue = 0.5  -- transparência (0 = opaco | 1 = invisível)
+
 local Window = WindUI:CreateWindow({
     Title        = "Farm EB do Delta",
-    Icon         = "pickaxe",        -- ícone Lucide compatível com WindUI v2
+    Icon         = "pickaxe",
     Author       = "by CoiledTom",
     Keybind      = Enum.KeyCode.RightControl,
     SaveConfig   = true,
     ConfigFolder = "CoiledTomHub",
+    DisableBar   = true,   -- remove a barra de minimizar
 })
 
 local Tabs = {
@@ -40,16 +42,16 @@ local Tabs = {
 --   VARIÁVEIS DE CONTROLE
 -- ============================================================
 
-local farmAtivo      = false
+local farmAtivo        = false
 local trabalhoIniciado = false
-local farmThread     = nil
+local farmThread       = nil
 
 -- ============================================================
---   DADOS DAS COORDENADAS
+--   COORDENADAS
 -- ============================================================
 
-local COORD_PEGAR_TRABALHO = Vector3.new(-1444, 13, -63)
-local COORD_ENTREGA        = Vector3.new(-1417, 11, -87)
+local COORD_PEGAR_TRABALHO = Vector3.new(-1444, 13,  -63)
+local COORD_ENTREGA        = Vector3.new(-1417, 11,  -87)
 
 local COORDS_CONSTRUCAO = {
     Vector3.new(-1398,  8,  -98),
@@ -71,7 +73,7 @@ local COORDS_CONSTRUCAO = {
 --   FUNÇÕES UTILITÁRIAS
 -- ============================================================
 
--- Atualiza referência ao personagem (seguro contra morte)
+-- Atualiza referências ao personagem (seguro contra morte)
 local function atualizarPersonagem()
     Character = LocalPlayer.Character
     if Character then
@@ -84,55 +86,58 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     HRP = char:WaitForChild("HumanoidRootPart")
 end)
 
--- Teleporte seguro — aguarda HRP válido
-local function teleportar(posicao)
+-- Move o personagem via TweenService até a posição desejada
+local function mover(posicao, velocidade)
     atualizarPersonagem()
     if not Character or not HRP then return end
-    HRP.CFrame = CFrame.new(posicao)
-    task.wait(0.3)
+
+    velocidade = velocidade or 0.6  -- duração em segundos (ajuste conforme necessário)
+
+    local tween = TweenService:Create(
+        HRP,
+        TweenInfo.new(velocidade, Enum.EasingStyle.Linear),
+        { CFrame = CFrame.new(posicao) }
+    )
+
+    tween:Play()
+    tween.Completed:Wait()
+    task.wait(0.2)
 end
 
--- Simula pressionamento da tecla E
+-- Simula pressionar a tecla E
 local function pressionarE()
-    local vim = game:GetService("VirtualInputManager")
-    vim:SendKeyEvent(true,  Enum.KeyCode.E, false, game)
+    VirtualInput:SendKeyEvent(true,  Enum.KeyCode.E, false, game)
     task.wait(0.1)
-    vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    VirtualInput:SendKeyEvent(false, Enum.KeyCode.E, false, game)
     task.wait(0.4)
 end
 
--- Clica em um botão de UI do jogo pelo nome
+-- Clica em botão da UI do jogo pelo nome
 local function clicarBotaoUI(nomeBotao)
-    -- Tenta encontrar o botão dentro de qualquer ScreenGui ou PlayerGui
     local PlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not PlayerGui then return end
+    if not PlayerGui then return false end
 
     for _, gui in ipairs(PlayerGui:GetDescendants()) do
-        if gui:IsA("TextButton") or gui:IsA("ImageButton") then
-            if gui.Name == nomeBotao then
-                local oldVisible = gui.Visible
-                -- Dispara clique via método interno
-                gui.MouseButton1Click:Fire()
-                task.wait(0.1)
-                return true
-            end
+        if (gui:IsA("TextButton") or gui:IsA("ImageButton")) and gui.Name == nomeBotao then
+            gui.MouseButton1Click:Fire()
+            task.wait(0.1)
+            return true
         end
     end
     return false
 end
 
 -- ============================================================
---   LÓGICA: PEGAR TRABALHO (executa apenas uma vez)
+--   LÓGICA: PEGAR TRABALHO (apenas uma vez)
 -- ============================================================
 
 local function pegarTrabalho()
-    teleportar(COORD_PEGAR_TRABALHO)
+    mover(COORD_PEGAR_TRABALHO)
     task.wait(0.5)
 
-    pressionarE()          -- abre menu de trabalho
+    pressionarE()
     task.wait(0.8)
 
-    -- Clica em "LeftOption" duas vezes com intervalo de 1 segundo
     clicarBotaoUI("LeftOption")
     task.wait(1)
     clicarBotaoUI("LeftOption")
@@ -146,7 +151,6 @@ end
 -- ============================================================
 
 local function loopFarm()
-    -- Pega trabalho apenas na primeira ativação
     if not trabalhoIniciado then
         pegarTrabalho()
     end
@@ -154,35 +158,26 @@ local function loopFarm()
     local indice = 1
 
     while farmAtivo do
-        -- Verifica se personagem ainda está válido
         atualizarPersonagem()
         if not Character or not HRP then
             task.wait(1)
             continue
         end
 
-        local coordAtual = COORDS_CONSTRUCAO[indice]
+        -- 1. Ir até ponto de construção via Tween
+        mover(COORDS_CONSTRUCAO[indice])
 
-        -- 1. Teleportar até o ponto de construção
-        teleportar(coordAtual)
-        task.wait(0.3)
-
-        -- 2. Pressionar E para coletar/interagir
+        -- 2. Interagir no ponto
         pressionarE()
-        task.wait(0.3)
 
-        -- 3. Teleportar até a entrega
-        teleportar(COORD_ENTREGA)
-        task.wait(0.3)
+        -- 3. Ir até entrega via Tween
+        mover(COORD_ENTREGA)
 
-        -- 4. Pressionar E para entregar
+        -- 4. Entregar
         pressionarE()
-        task.wait(0.3)
 
-        -- 5. Avança para a próxima coordenada (loop circular)
+        -- 5. Próxima coordenada (loop circular)
         indice = indice % #COORDS_CONSTRUCAO + 1
-
-        task.wait(0.1) -- pequena pausa de segurança entre ciclos
     end
 end
 
@@ -190,9 +185,7 @@ end
 --   UI — ABA FARM
 -- ============================================================
 
-local secaoFarm = Tabs.Farm:Section({ Title = "Construção" })
-
-secaoFarm:Toggle({
+Tabs.Farm:Toggle({
     Title       = "Farm construção",
     Description = "leval +0",
     Default     = false,
@@ -200,10 +193,8 @@ secaoFarm:Toggle({
         farmAtivo = estado
 
         if estado then
-            -- Inicia o farm em uma thread separada
             farmThread = task.spawn(loopFarm)
         else
-            -- Para o loop; a thread verifica `farmAtivo` e encerra sozinha
             if farmThread then
                 task.cancel(farmThread)
                 farmThread = nil
@@ -216,12 +207,10 @@ secaoFarm:Toggle({
 --   UI — ABA CONFIGS
 -- ============================================================
 
-local secaoConfig = Tabs.Configs:Section({ Title = "Sistema" })
-
-secaoConfig:Button({
-    Title    = "Resetar Trabalho",
-    Description = "Força buscar o trabalho novamente na próxima ativação",
-    Callback = function()
+Tabs.Configs:Button({
+    Title       = "Resetar Trabalho",
+    Description = "Força buscar o trabalho na próxima ativação",
+    Callback    = function()
         trabalhoIniciado = false
         WindUI:Notify({
             Title   = "Farm EB",
@@ -232,9 +221,9 @@ secaoConfig:Button({
     end,
 })
 
-secaoConfig:Paragraph({
+Tabs.Configs:Paragraph({
     Title   = "Farm EB do Delta",
-    Content = "by CoiledTom\nUse o keybind [RightCtrl] para ocultar/mostrar a UI.",
+    Content = "by CoiledTom · RightCtrl para ocultar/mostrar",
 })
 
 -- ============================================================
@@ -243,7 +232,7 @@ secaoConfig:Paragraph({
 
 WindUI:Notify({
     Title   = "Farm EB do Delta",
-    Content = "Script carregado com sucesso! by CoiledTom",
+    Content = "Carregado com sucesso! by CoiledTom",
     Icon    = "check-circle",
     Time    = 5,
 })
