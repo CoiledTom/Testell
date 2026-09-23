@@ -640,23 +640,25 @@ end)
 
 local returnConnection = nil
 local characterRemovingConnection = nil
+local watchedCharacter = nil
+local savedCharacter = nil
 
+-- Salva UMA vez por personagem que morreu/resetou.
+-- Isso evita o segundo retorno pegar um estado errado do personagem novo.
 local function saveReturnPosition(character)
-    if not returnEnabled or not character then
+    if not returnEnabled or not character or savedCharacter == character then
         return
     end
 
     local root = character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildWhichIsA("Humanoid")
-
-    if not root or not humanoid or humanoid.Health <= 0 and not root.Parent then
+    if not root or not root.Parent then
         return
     end
 
-    if root.Parent then
-        savedDeathCFrame = root.CFrame
-        savedDeathFlying = nowe == true
-    end
+    -- Captura exatamente o CFrame atual antes do personagem desaparecer.
+    savedDeathCFrame = root.CFrame
+    savedDeathFlying = (nowe == true)
+    savedCharacter = character
 end
 
 local function watchCharacter(character)
@@ -664,6 +666,8 @@ local function watchCharacter(character)
         returnConnection:Disconnect()
         returnConnection = nil
     end
+
+    watchedCharacter = character
 
     local humanoid = character:WaitForChild("Humanoid", 10)
     local root = character:WaitForChild("HumanoidRootPart", 10)
@@ -673,9 +677,14 @@ local function watchCharacter(character)
     end
 
     returnConnection = humanoid.Died:Connect(function()
+        if watchedCharacter ~= character then
+            return
+        end
+
+        -- Died normalmente acontece antes do CharacterRemoving.
         saveReturnPosition(character)
 
-        -- Encerra o Fly do personagem antigo.
+        -- Para imediatamente o Fly antigo.
         nowe = false
         tpwalking = false
     end)
@@ -687,19 +696,14 @@ if speaker.Character then
     end)
 end
 
--- CharacterRemoving pega o CFrame antes do personagem desaparecer.
--- Isso deixa o RETURN confiável tanto no RESET quanto na morte.
-if characterRemovingConnection then
-    characterRemovingConnection:Disconnect()
-end
-
+-- RESET também passa por CharacterRemoving.
+-- Aqui o CFrame é salvo antes do personagem ser destruído.
 characterRemovingConnection = speaker.CharacterRemoving:Connect(function(character)
-    -- Se Died já salvou, não sobrescreve o estado de Fly.
-    -- No RESET normalmente só CharacterRemoving dispara, então salva aqui.
-    if not savedDeathCFrame then
+    if watchedCharacter == character then
         saveReturnPosition(character)
     end
 
+    -- O motor antigo nunca pode continuar controlando o novo personagem.
     nowe = false
     tpwalking = false
 end)
@@ -718,14 +722,18 @@ speaker.CharacterAdded:Connect(function(character)
 
     local target = savedDeathCFrame
     local shouldFly = savedDeathFlying
+    local hasReturn = returnEnabled and target ~= nil
 
+    -- O alvo só é consumido quando realmente encontramos um novo personagem.
     savedDeathCFrame = nil
     savedDeathFlying = false
+    savedCharacter = nil
 
-    if not returnEnabled or not target then
+    if not hasReturn then
         nowe = false
         tpwalking = false
         humanoid.PlatformStand = false
+        humanoid.AutoRotate = true
 
         local animate = character:FindFirstChild("Animate")
         if animate then
@@ -736,58 +744,61 @@ speaker.CharacterAdded:Connect(function(character)
         return
     end
 
-    restoring = true
+    -- Tudo que acontecer durante a janela de 1 segundo fica preso ao alvo.
+    local restoreToken = {}
+    restoring = restoreToken
 
-    --====================================================--
-    -- 1. TELEPORTA IMEDIATAMENTE
-    --====================================================--
-
-    character:PivotTo(target)
-    root.CFrame = target
-
-    -- Prende o personagem exatamente no lugar durante a restauração.
-    root.Anchored = true
     humanoid.AutoRotate = false
     humanoid.PlatformStand = false
+    root.Anchored = true
+
+    -- Teleporte inicial.
+    character:PivotTo(target)
+    root.CFrame = target
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
 
     local animate = character:FindFirstChild("Animate")
 
-    --====================================================--
-    -- 2. SE ESTAVA VOANDO, ATIVA O FLY DURANTE O 1s
-    --====================================================--
-
-    if shouldFly then
-        task.spawn(function()
-            -- Pequeno ciclo para garantir que o personagem já esteja
-            -- completamente montado antes de iniciar o motor do Fly.
-            RunService.Heartbeat:Wait()
-
-            if character.Parent and humanoid.Health > 0 then
-                root.CFrame = target
-                nowe = false
-                toggleFly()
-                updateFlyVisual()
-            end
-        end)
+    if animate then
+        animate.Disabled = true
     end
 
-    --====================================================--
-    -- 3. FICA PARADO POR 1 SEGUNDO
-    --====================================================--
+    -- Se estava voando antes de morrer/resetar, liga o Fly AGORA.
+    -- O root continua ancorado, então andar no mobile não consegue deslocá-lo.
+    if shouldFly then
+        nowe = false
+        tpwalking = false
+        toggleFly()
+        updateFlyVisual()
+    else
+        nowe = false
+        tpwalking = false
+        updateFlyVisual()
+    end
 
+    -- Mantém EXATAMENTE o CFrame salvo durante todo o segundo.
+    -- Mesmo que o jogador arraste o dedo e tente andar, ele volta para o alvo
+    -- a cada Heartbeat.
     local endTime = os.clock() + 1
 
-    while character.Parent and humanoid.Health > 0 and os.clock() < endTime do
-        root.CFrame = target
+    while character.Parent and humanoid.Health > 0 and restoring == restoreToken and os.clock() < endTime do
+        if root.Parent then
+            root.CFrame = target
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end
         RunService.Heartbeat:Wait()
     end
 
-    --====================================================--
-    -- 4. LIBERA O PERSONAGEM
-    --====================================================--
+    if restoring == restoreToken then
+        restoring = false
+    end
 
     if root and root.Parent then
         root.CFrame = target
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
         root.Anchored = false
     end
 
@@ -796,15 +807,15 @@ speaker.CharacterAdded:Connect(function(character)
     if not shouldFly then
         nowe = false
         tpwalking = false
-        humanoid.PlatformStand = false
 
         if animate then
             animate.Disabled = false
         end
+
+        humanoid.PlatformStand = false
     end
 
-    restoring = false
-
+    -- Começa a observar ESTE personagem para o próximo reset/morte.
     watchCharacter(character)
 end)
 
